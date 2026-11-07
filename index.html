@@ -179,7 +179,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--ink);outline-of
 .chip:active{transform:scale(.95)}
 .chip.mine{background:var(--hot);border-color:transparent;color:#fff;padding-right:8px;box-shadow:0 8px 20px -10px var(--hot-glow)}
 .chip.mine .x{width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,.25);display:grid;place-items:center;font-family:var(--ui);font-size:12px}
-.chip.used{opacity:.35}
+.chip .qn{font-family:var(--ui);font-size:11.5px;font-weight:800;color:#5ee7ff;padding:2px 6px;border-radius:999px;background:rgba(0,212,255,.14)}
 .none{color:var(--muted);font-size:14px;font-weight:600}
 .done{margin-top:22px;width:100%;border-radius:16px;padding:14px;font-size:16px;font-weight:700;background:var(--glass);border:1px solid var(--glass-border)}
 
@@ -344,9 +344,12 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--ink);outline-of
   /* ---------- Chord track ---------- */
   function setTransition(){track.style.setProperty('--t',Math.max(180,Math.min(650,beatSec()*700))+'ms');}
   function fontFor(name){var n=name.length;return n<=1?46:n===2?40:n===3?33:n===4?27:n===5?23:n===6?20:17;}
-  function makeChord(name,pos){
+  // Each chord on screen remembers its slot number in your list, so repeated chords (C, G, C) stay in the right place.
+  function idxOf(el){return el?parseInt(el.dataset.idx,10):-1;}
+  function makeChord(idx,pos){
+    var name=state.chords[idx];
     var d=document.createElement('div');
-    d.className='chord '+pos; d.dataset.name=name;
+    d.className='chord '+pos; d.dataset.name=name; d.dataset.idx=idx;
     d.style.fontSize='calc(var(--d) * '+(fontFor(name)/100)+')';
     var ring=document.createElement('i'); ring.className='ring';
     var s=document.createElement('span'); s.textContent=name;
@@ -354,17 +357,21 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--ink);outline-of
     track.appendChild(d);
     return d;
   }
-  function pick(exclude){
-    var list=state.chords;
-    if(!list.length) return null;
-    if(list.length===1) return list[0];
+  // Returns the slot number of the chord that should come after slot "prev".
+  function pick(prev){
+    var list=state.chords, n=list.length;
+    if(!n) return -1;
+    var fresh=(prev===null||prev<0||prev>=n);
     if(state.order==='serial'){
-      // In order: the chord that comes after this one in your list, looping back to the start.
-      if(exclude===null) return list[0];
-      return list[(list.indexOf(exclude)+1)%list.length];
+      // In order: the next slot in your list, looping back to the start.
+      return fresh?0:(prev+1)%n;
     }
-    var c; do{c=list[Math.floor(Math.random()*list.length)];}while(c===exclude);
-    return c;
+    if(fresh||n===1) return Math.floor(Math.random()*n);
+    // Random: any slot, but avoid showing the same chord name twice in a row when possible.
+    var choices=[];
+    for(var i=0;i<n;i++) if(list[i]!==list[prev]) choices.push(i);
+    if(!choices.length) return Math.floor(Math.random()*n);
+    return choices[Math.floor(Math.random()*choices.length)];
   }
   function clearTrack(){
     Array.prototype.slice.call(track.querySelectorAll('.chord')).forEach(function(n){n.remove();});
@@ -384,7 +391,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--ink);outline-of
     if(els.left){var gone=els.left; gone.className='chord p-out'; setTimeout(function(){gone.remove();},900);}
     els.left=els.center; els.left.className='chord p-left';
     els.center=els.right; els.center.className='chord p-center';
-    var incoming=makeChord(pick(els.center.dataset.name),'p-in');
+    var incoming=makeChord(pick(idxOf(els.center)),'p-in');
     incoming.getBoundingClientRect();
     incoming.className='chord p-right';
     els.right=incoming;
@@ -392,8 +399,8 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--ink);outline-of
   function refreshNext(){
     // Swap the greyed "Next" chord so it matches the current order setting.
     if(!els.center) return;
-    var want=pick(els.center.dataset.name);
-    if(els.right&&els.right.dataset.name===want) return;
+    var want=pick(idxOf(els.center));
+    if(els.right&&idxOf(els.right)===want&&els.right.dataset.name===state.chords[want]) return;
     if(els.right){var old=els.right; old.className='chord p-in'; setTimeout(function(){old.remove();},900);}
     var incoming=makeChord(want,'p-in');
     incoming.getBoundingClientRect();
@@ -519,16 +526,21 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--ink);outline-of
     parts.forEach(function(p){
       var c=normalize(p); if(!c) return;
       if(!valid(c)){skipped.push(c);return;}
-      if(state.chords.indexOf(c)!==-1) return;
       state.chords.push(c); added.push(c);
     });
     if(added.length) flash('Added '+added.join(', '));
     else if(skipped.length) flash('Chord names start with a letter from A to G');
-    else flash('Already in your list');
     onChordsChanged();
   }
-  function removeChord(c){
-    state.chords=state.chords.filter(function(x){return x!==c;});
+  function removeChord(i){
+    var c=state.chords[i]; if(c===undefined) return;
+    state.chords.splice(i,1);
+    // Shift the slot numbers of the chords on screen to match the shorter list.
+    [els.left,els.center,els.right].forEach(function(el){
+      if(!el) return;
+      var k=idxOf(el);
+      if(k===i) el.dataset.idx=-1; else if(k>i) el.dataset.idx=k-1;
+    });
     flash('Removed '+c); onChordsChanged();
   }
   function renderCount(){
@@ -538,32 +550,33 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--ink);outline-of
   function onChordsChanged(){
     save(); renderLists(); renderCount();
     if(!state.chords.length){stop();buildTrack();return;}
-    var shown=[els.center,els.right].filter(Boolean).map(function(n){return n.dataset.name;});
-    var broken=!els.center||shown.some(function(n){return state.chords.indexOf(n)===-1;});
-    if(broken) buildTrack();
-    else if(state.order==='serial') refreshNext();
+    if(!els.center||idxOf(els.center)<0) buildTrack();
+    else if(state.order==='serial'||idxOf(els.right)<0) refreshNext();
   }
+  function countOf(c){var n=0; state.chords.forEach(function(x){if(x===c) n++;}); return n;}
   function renderLists(){
     var mine=$('mine'); mine.innerHTML='';
     if(!state.chords.length){
       var p=document.createElement('span'); p.className='none'; p.textContent='Nothing here yet. Add two or more to practice switching.';
       mine.appendChild(p);
     }
-    state.chords.forEach(function(c){
+    state.chords.forEach(function(c,i){
       var b=document.createElement('button');
-      b.className='chip mine'; b.setAttribute('aria-label','Remove '+c);
+      b.className='chip mine'; b.setAttribute('aria-label','Remove '+c+' (number '+(i+1)+')');
       b.innerHTML='<span></span><span class="x" aria-hidden="true">✕</span>';
       b.firstChild.textContent=c;
-      b.addEventListener('click',function(){removeChord(c);});
+      b.addEventListener('click',function(){removeChord(i);});
       mine.appendChild(b);
     });
     var quick=$('quick'); quick.innerHTML='';
     QUICK.forEach(function(c){
-      var used=state.chords.indexOf(c)!==-1;
+      // Quick add always adds one more; a small number shows how many are already in your list.
+      var n=countOf(c);
       var b=document.createElement('button');
-      b.className='chip'+(used?' used':''); b.textContent=c;
-      b.setAttribute('aria-label',used?'Remove '+c:'Add '+c);
-      b.addEventListener('click',function(){used?removeChord(c):addChords(c);});
+      b.className='chip'; b.textContent=c;
+      if(n){var k=document.createElement('span'); k.className='qn'; k.textContent='×'+n; b.appendChild(k);}
+      b.setAttribute('aria-label','Add '+c+(n?' (already '+n+' in your list)':''));
+      b.addEventListener('click',function(){addChords(c);});
       quick.appendChild(b);
     });
   }
